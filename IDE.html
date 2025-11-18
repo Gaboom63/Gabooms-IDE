@@ -1,0 +1,849 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Local Web IDE v15.2 (Console Exec & No Bars)</title>
+    <script src="https://unpkg.com/monaco-editor@latest/min/vs/loader.js"></script>
+    <style>
+        :root { --bg-app: #1e1e1e; --bg-sidebar: #252526; --bg-header: #3c3c3c; --text-main: #cccccc; --accent: #007acc; --border: #3e3e42; --hover: #2a2d2e; --input-bg: #3c3c3c; --shadow: 0 4px 6px rgba(0,0,0,0.3); --tab-inactive: #2d2d2d; --tab-active: #1e1e1e; }
+        * { box-sizing: border-box; }
+        
+        /* --- SCROLLBAR NUKE ZONE --- */
+        /* 1. Hide Native Browser Scrollbars */
+        ::-webkit-scrollbar { display: none; }
+        * { -ms-overflow-style: none; scrollbar-width: none; }
+
+        /* 2. Hide Monaco Editor Scrollbars (The "Dots" and Gray Bars) */
+        /* This hides the moving slider but keeps the container for mouse events */
+        .monaco-editor .scrollbar .slider { background: transparent !important; }
+        .monaco-editor .scrollbar .scrollbar-background { background: transparent !important; }
+        .monaco-editor .decorationsOverviewRuler { display: none !important; } /* Hides the error "dots" lane if that's what you meant */
+        /* Note: We do NOT hide .minimap, so the "magnifine thingy" stays */
+
+        body { margin: 0; padding: 0; background-color: var(--bg-app); color: var(--text-main); font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif; height: 100vh; display: flex; flex-direction: column; overflow: hidden; }
+        
+        /* Header */
+        header { height: 35px; background-color: var(--bg-header); display: flex; align-items: center; padding: 0 15px; font-size: 13px; border-bottom: 1px solid var(--border); justify-content: space-between; user-select: none; z-index: 10; }
+        .header-left { display: flex; gap: 10px; align-items: center; }
+        .menu-btn, select { background: var(--input-bg); border: 1px solid var(--border); color: var(--text-main); cursor: pointer; padding: 3px 10px; border-radius: 3px; font-size: 12px; outline: none; transition: opacity 0.2s; }
+        .menu-btn:hover { opacity: 0.8; background: var(--hover); }
+
+        /* Layout */
+        .main-container { display: flex; flex: 1; height: calc(100vh - 57px); position: relative; }
+        .sidebar { width: 250px; background-color: var(--bg-sidebar); border-right: 1px solid var(--border); display: flex; flex-direction: column; position: relative; overflow: hidden; flex-shrink: 0; transition: width 0.3s cubic-bezier(0.25, 0.8, 0.25, 1), opacity 0.2s; }
+        .sidebar.collapsed { width: 0; border: none; opacity: 0; }
+        .sidebar-header { padding: 10px; font-weight: bold; font-size: 11px; opacity: 0.7; display: flex; justify-content: space-between; align-items: center; min-width: 250px; }
+        
+        /* Search */
+        .search-trigger { cursor: pointer; opacity: 0.8; font-size: 14px; padding:5px; border-radius:3px; }
+        .search-trigger:hover { background: var(--hover); color: var(--accent); }
+        .search-box-container { display: none; padding: 5px 10px; background: var(--bg-sidebar); border-bottom: 1px solid var(--border); }
+        .search-box-container.visible { display: block; }
+        #searchInput { width: 100%; background: var(--input-bg); border: 1px solid var(--accent); color: var(--text-main); padding: 4px; border-radius: 2px; outline: none; }
+        
+        /* File Tree */
+        .file-explorer { flex: 1; overflow-y: auto; padding-top: 5px; min-width: 250px; }
+        .search-results { flex: 1; overflow-y: auto; display: none; background: var(--bg-sidebar); min-width: 250px; }
+        .search-results.visible { display: block; }
+        .tree-item { padding: 4px 10px; cursor: pointer; font-size: 13px; display: flex; align-items: center; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; transition: background 0.1s ease; }
+        .tree-item:hover { background-color: var(--hover); }
+        .tree-item.directory { font-weight: 600; }
+        .search-match { border-left: 3px solid var(--accent); background: var(--hover); }
+
+        /* Workspace & Tabs */
+        .center-stage { flex: 1; display: flex; flex-direction: column; min-width: 0; }
+        .tab-bar { height: 35px; background-color: var(--bg-sidebar); display: flex; align-items: flex-end; overflow-x: auto; overflow-y: hidden; border-bottom: 1px solid var(--border); }
+        .tab {
+            height: 100%; display: flex; align-items: center; padding: 0 10px; 
+            background-color: var(--tab-inactive); color: #888; border-right: 1px solid var(--border); 
+            font-size: 12px; cursor: pointer; min-width: 100px; max-width: 200px; user-select: none;
+            position: relative;
+        }
+        .tab:hover { background-color: var(--hover); }
+        .tab.active { background-color: var(--tab-active); color: var(--text-main); border-top: 2px solid var(--accent); }
+        .tab-name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; margin-right: 8px; }
+        .tab-close { margin-left: auto; font-size: 14px; border-radius: 50%; padding: 0 4px; color: inherit; opacity: 0.7; }
+        .tab-close:hover { background: rgba(255,255,255,0.2); opacity: 1; }
+        .unsaved-dot { width: 8px; height: 8px; background-color: white; border-radius: 50%; display: none; margin-left: 5px;}
+        .tab.dirty .unsaved-dot { display: block; }
+        .tab.dirty .tab-close { display: none; }
+        .tab:hover .unsaved-dot { display: none; }
+        .tab:hover .tab-close { display: block; }
+
+        .workspace-area { flex: 1; display: flex; flex-direction: row; background-color: var(--bg-app); overflow: hidden; }
+        .editor-column { flex: 1; display: flex; flex-direction: column; min-width: 0; position: relative; }
+        #mediaContainer { flex: 1; display: none; align-items: center; justify-content: center; flex-direction: column; background: var(--bg-app); overflow: auto; padding: 20px; }
+        #mediaContainer img { max-width: 90%; max-height: 90%; border: 1px solid var(--border); box-shadow: var(--shadow); background-image: linear-gradient(45deg, #2e2e2e 25%, transparent 25%), linear-gradient(-45deg, #2e2e2e 25%, transparent 25%), linear-gradient(45deg, transparent 75%, #2e2e2e 75%), linear-gradient(-45deg, transparent 75%, #2e2e2e 75%); background-size: 20px 20px; animation: fadeIn 0.3s ease; }
+        @keyframes fadeIn { from { opacity: 0; transform: scale(0.95); } to { opacity: 1; transform: scale(1); } }
+        .audio-player-box { display:flex; flex-direction:column; align-items:center; justify-content:center; padding:40px; background:var(--bg-sidebar); border-radius:10px; border:1px solid var(--border); box-shadow: var(--shadow); }
+        
+        .right-panel { width: 0; display: none; flex-direction: column; border-left: 1px solid var(--border); background-color: #ffffff; transition: width 0.3s cubic-bezier(0.25, 0.8, 0.25, 1); }
+        .right-panel.open { width: 50%; display: flex; }
+        .panel-header { height: 35px; background: #f0f0f0; border-bottom: 1px solid #ccc; display: flex; align-items: center; padding: 0 5px; }
+        .browser-bar { display: flex; flex: 1; gap: 5px; align-items: center; }
+        .url-input { flex: 1; border: 1px solid #ccc; padding: 4px 8px; font-size: 12px; border-radius: 3px; }
+        .icon-btn { border: none; background: none; cursor: pointer; color: #555; font-weight: bold; padding: 0 8px; font-size: 14px; border-radius:3px; transition:background 0.2s; }
+        .icon-btn:hover { background: #e0e0e0; }
+        iframe { flex: 1; border: none; width: 100%; height: 100%; background: white; }
+        
+        /* Console */
+        .console-pane { height: 0; background-color: var(--bg-app); border-top: 1px solid var(--border); display: none; flex-direction: column; font-family: 'Consolas', monospace; font-size: 12px; transition: height 0.2s cubic-bezier(0.25, 0.8, 0.25, 1); }
+        .console-pane.open { height: 150px; display: flex; }
+        .console-output { flex: 1; overflow-y: auto; padding: 5px; color: var(--text-main); }
+        .console-input-line { display: flex; border-top: 1px solid var(--border); padding: 5px; }
+        #consoleInput { flex: 1; background: transparent; border: none; color: var(--text-main); outline: none; }
+        
+        footer { height: 22px; background-color: var(--accent); color: white; display: flex; align-items: center; padding: 0 10px; font-size: 12px; justify-content: space-between; z-index: 10; }
+        .footer-item { display: flex; gap: 15px; cursor: pointer; }
+        .footer-btn:hover { text-decoration: underline; }
+        .resume-btn { background: var(--accent); color: white; border: none; padding: 10px 20px; border-radius: 4px; cursor: pointer; font-size: 14px; margin-top: 10px; box-shadow: 0 2px 5px rgba(0,0,0,0.2); transition: transform 0.1s, background 0.2s; }
+        .resume-btn:hover { transform: translateY(-1px); background: #0062a3; }
+        
+        /* Spinner */
+        #loadingOverlay {
+            position: absolute; top:0; left:0; right:0; bottom:0; background: rgba(0,0,0,0.7);
+            display: none; align-items: center; justify-content: center; z-index: 100; flex-direction: column;
+        }
+        .spinner { width: 30px; height: 30px; border: 4px solid var(--accent); border-top: 4px solid transparent; border-radius: 50%; animation: spin 1s linear infinite; margin-bottom: 10px;}
+        @keyframes spin { 0% { transform: rotate(0deg); } 100% { transform: rotate(360deg); } }
+
+        /* Settings Modal */
+        .modal-overlay { position: fixed; top:0; left:0; width:100%; height:100%; background: rgba(0,0,0,0.5); z-index: 200; display:none; align-items:center; justify-content:center; }
+        .modal { background: var(--bg-sidebar); border: 1px solid var(--border); width: 300px; padding: 20px; border-radius: 5px; box-shadow: var(--shadow); }
+        .modal h3 { margin-top: 0; color: var(--text-main); border-bottom: 1px solid var(--border); padding-bottom: 10px; }
+        .setting-row { display: flex; justify-content: space-between; align-items: center; margin-bottom: 15px; font-size: 13px; }
+        .toggle-switch { position: relative; display: inline-block; width: 34px; height: 18px; }
+        .toggle-switch input { opacity: 0; width: 0; height: 0; }
+        .slider { position: absolute; cursor: pointer; top: 0; left: 0; right: 0; bottom: 0; background-color: #ccc; transition: .4s; border-radius: 34px; }
+        .slider:before { position: absolute; content: ""; height: 14px; width: 14px; left: 2px; bottom: 2px; transition: .4s; border-radius: 50%; }
+        input:checked + .slider { background-color: var(--accent); }
+        input:checked + .slider:before { transform: translateX(16px); }
+        .close-modal-btn { background: var(--accent); color: white; border: none; padding: 5px 15px; border-radius: 3px; cursor: pointer; float: right; }
+    </style>
+</head>
+<body>
+
+<header>
+    <div class="header-left">
+        <button class="menu-btn" onclick="toggleSidebar()" title="Toggle Sidebar (Ctrl+B)">☰</button>
+        <button class="menu-btn" onclick="openFolder()">📂 Open</button>
+        <button class="menu-btn" onclick="openSettings()">⚙️ Settings</button>
+    </div>
+    <div class="header-right">
+        <select id="themeSelect" onchange="changeTheme(this.value)">
+            <option value="vs-dark">Theme: Dark</option>
+            <option value="vs-light">Theme: Light</option>
+            <option value="dracula">Theme: Dracula</option>
+            <option value="monokai">Theme: Monokai</option>
+            <option value="solarized">Theme: Solarized</option>
+            <option value="synthwave">Theme: SynthWave '84</option>
+        </select>
+    </div>
+</header>
+
+<div class="main-container">
+    <div class="sidebar" id="mainSidebar">
+        <div class="sidebar-header">
+            <span>EXPLORER</span>
+            <span class="search-trigger" onclick="toggleSearch()" title="Search Files (Ctrl+P)">🔍</span>
+        </div>
+        <div class="search-box-container" id="searchBoxContainer">
+            <input type="text" id="searchInput" placeholder="Search path..." autocomplete="off">
+        </div>
+        <div class="file-explorer" id="fileExplorer">
+            <div style="padding:20px; text-align:center; opacity:0.5;">No Folder</div>
+        </div>
+        <div class="search-results" id="searchResults"></div>
+    </div>
+
+    <div class="center-stage">
+        <div class="tab-bar" id="tabBar"></div>
+
+        <div class="workspace-area">
+            <div class="editor-column">
+                <div id="monaco-container" style="flex:1; display:none;"></div>
+                <div id="mediaContainer"></div>
+                <div id="emptyState" style="flex:1; display:flex; align-items:center; justify-content:center; opacity:0.5; flex-direction:column;">
+                    <h2>Web IDE v15.2</h2>
+                    <p>Open a folder to start.</p>
+                    <div id="resumeSection" style="display:none; text-align:center; margin-top:20px;">
+                        <p>Welcome back!</p>
+                        <button class="resume-btn" onclick="resumeProject()">Resume Previous Project</button>
+                    </div>
+                </div>
+                <div id="loadingOverlay">
+                    <div class="spinner"></div>
+                    <div id="loadingText" style="color:white;">Processing Assets...</div>
+                </div>
+            </div>
+
+            <div class="right-panel" id="rightPanel">
+                <div class="panel-header">
+                    <div class="browser-bar" id="browserControls">
+                        <button class="icon-btn" onclick="browserBack()">←</button>
+                        <button class="icon-btn" onclick="browserRefresh()">↻</button>
+                        <input type="text" class="url-input" id="urlInput" placeholder="https://" onkeydown="if(event.key==='Enter') loadUrl()">
+                        <label title="Bypass X-Frame-Options" style="font-size:10px; display:flex; align-items:center;">
+                            <input type="checkbox" id="proxyCheck"> Proxy
+                        </label>
+                        <button class="icon-btn" onclick="loadUrl()">Go</button>
+                        <button class="icon-btn" onclick="closeRightPanel()" style="color:red; margin-left:auto;">✕</button>
+                    </div>
+                    <div id="livePreviewControls" style="display:none; flex:1; align-items:center;">
+                        <strong style="margin-left:10px;">Live Preview</strong>
+                        <button class="icon-btn" onclick="fullRefresh()" style="margin-left:10px;">↻ Full Reload</button>
+                        <button class="icon-btn" onclick="closeRightPanel()" style="color:red; margin-left:auto;">✕</button>
+                    </div>
+                </div>
+                <iframe id="webFrame"></iframe>
+            </div>
+        </div>
+
+        <div class="console-pane" id="consolePane">
+            <div style="padding:5px; border-bottom:1px solid var(--border); display:flex; justify-content:space-between;">
+                <span>DEBUG CONSOLE</span>
+                <button onclick="document.getElementById('consoleOutput').innerHTML=''" style="background:none;border:none;color:var(--text-main);cursor:pointer;">🚫 Clear</button>
+            </div>
+            <div class="console-output" id="consoleOutput"></div>
+            <div class="console-input-line">
+                <span style="color: var(--accent); margin-right:5px;">></span>
+                <input type="text" id="consoleInput" placeholder="Execute JS..." autocomplete="off">
+            </div>
+        </div>
+    </div>
+</div>
+
+<footer>
+    <div class="footer-item">
+        <div class="footer-btn" onclick="toggleConsole()">Terminal</div>
+    </div>
+    <div class="footer-item">
+        <div class="footer-btn" onclick="openBrowser()">🌐 Web Browser</div>
+        <div class="footer-btn" onclick="startLiveServer()">⚡ Go Live</div>
+        <div id="lang-display">TXT</div>
+    </div>
+</footer>
+
+<div class="modal-overlay" id="settingsModal">
+    <div class="modal">
+        <h3>Settings</h3>
+        <div class="setting-row">
+            <span>Auto Save</span>
+            <label class="toggle-switch">
+                <input type="checkbox" id="settingAutoSave" onchange="toggleAutoSave()">
+                <span class="slider"></span>
+            </label>
+        </div>
+        <div class="setting-row">
+            <span>Word Wrap</span>
+            <label class="toggle-switch">
+                <input type="checkbox" id="settingWordWrap" onchange="toggleWordWrap()">
+                <span class="slider"></span>
+            </label>
+        </div>
+        <div class="setting-row">
+            <span>Font Size</span>
+            <select id="settingFontSize" onchange="changeFontSize(this.value)" style="width:80px;">
+                <option value="12">12px</option>
+                <option value="14" selected>14px</option>
+                <option value="16">16px</option>
+                <option value="18">18px</option>
+            </select>
+        </div>
+        <button class="close-modal-btn" onclick="document.getElementById('settingsModal').style.display='none'">Close</button>
+    </div>
+</div>
+
+<script>
+    // --- Global Variables ---
+    let editor;
+    let tabs = []; 
+    let activeTabPath = null; 
+    let currentObjectUrl = null; 
+    let fileIndex = []; 
+    let projectRootHandle = null; 
+    let rightPanelMode = 'none';
+
+    // Settings Defaults
+    let settings = {
+        autoSave: false,
+        wordWrap: false,
+        fontSize: 14
+    };
+    let autoSaveTimer = null;
+    
+    // --- ASSET MANAGER ---
+    const AssetManager = {
+        cache: new Map(), 
+        clear() { this.cache.forEach(url => URL.revokeObjectURL(url)); this.cache.clear(); },
+        isHeavy(ext) { return ['png', 'jpg', 'jpeg', 'gif', 'svg', 'ico', 'mp3', 'wav', 'ogg', 'ttf', 'woff', 'woff2', 'otf', 'eot'].includes(ext); },
+        isCode(ext) { return ['js', 'json', 'css', 'html', 'txt', 'md'].includes(ext); },
+        getMimeType(ext) {
+            const mimes = {
+                'css': 'text/css', 'js': 'text/javascript', 'json': 'application/json',
+                'png': 'image/png', 'jpg': 'image/jpeg', 'jpeg': 'image/jpeg', 'gif': 'image/gif', 'svg': 'image/svg+xml',
+                'mp3': 'audio/mpeg', 'wav': 'audio/wav'
+            };
+            return mimes[ext] || 'application/octet-stream';
+        },
+        async fetchAndCache(item) {
+            const key = item.path; 
+            if (this.cache.has(key)) return this.cache.get(key);
+            try {
+                const file = await item.handle.getFile();
+                const ext = item.path.split('.').pop().toLowerCase();
+                let blob;
+                if (ext === 'css') {
+                    let cssText = await file.text();
+                    cssText = cssText.replace(/url\(['"]?([^'")]+)['"]?\)/g, (match, url) => {
+                        const cleanUrl = url.split('?')[0].split('#')[0];
+                        const resolved = resolvePath(item.path, cleanUrl);
+                        const cachedUrl = this.lookup(resolved);
+                        return cachedUrl ? `url('${cachedUrl}')` : match;
+                    });
+                    blob = new Blob([cssText], { type: 'text/css' });
+                } else {
+                    blob = new Blob([await file.arrayBuffer()], { type: this.getMimeType(ext) });
+                }
+                const url = URL.createObjectURL(blob);
+                this.cache.set(key, url);
+                this.cache.set(key.toLowerCase(), url); 
+                return url;
+            } catch (e) {
+                console.error("Failed to load asset", item.path, e);
+                return null;
+            }
+        },
+        lookup(path) { if (!path) return null; return this.cache.get(path) || this.cache.get(path.toLowerCase()); }
+    };
+
+    // --- SYSTEM LOGGER ---
+    window.runtimeLogger = (type, args) => {
+        const out = document.getElementById('consoleOutput');
+        const line = document.createElement('div');
+        line.style.borderBottom = '1px solid #333';
+        line.style.fontFamily = 'monospace';
+        line.style.padding = '2px';
+        line.style.whiteSpace = 'pre-wrap';
+        
+        if(type==='error') line.style.color = '#ff6b6b';
+        else if(type==='warn') line.style.color = '#feca57';
+        else if(type==='>') line.style.color = '#007acc'; // User input
+        else if(type==='<') line.style.color = '#888'; // Return value
+        else line.style.color = '#cccccc';
+
+        const text = args.map(arg => {
+            if (arg === null) return 'null';
+            if (arg === undefined) return 'undefined';
+            if (typeof arg === 'object') {
+                try { return JSON.stringify(arg, null, 2); } catch(e) { return '[object Object]'; }
+            }
+            return String(arg);
+        }).join(' ');
+        
+        line.textContent = (['>','<'].includes(type) ? '' : `[${type.toUpperCase()}] `) + text;
+        out.appendChild(line);
+        out.scrollTop = out.scrollHeight;
+    };
+
+    // --- CONSOLE INPUT HANDLER (The new fix) ---
+    document.getElementById('consoleInput').addEventListener('keydown', function(e) {
+        if (e.key === 'Enter') {
+            const code = this.value;
+            if (!code) return;
+            
+            // Log input
+            window.runtimeLogger('>', [code]);
+            
+            try {
+                const frame = document.getElementById('webFrame');
+                // Execute code in Iframe context
+                // Note: This works because srcdoc generally shares origin or permissions in this local context
+                // If using a proxy/real URL, this might be blocked by CORS.
+                if (rightPanelMode === 'live' && frame.contentWindow) {
+                    const result = frame.contentWindow.eval(code);
+                    window.runtimeLogger('<', [result]);
+                } else {
+                    window.runtimeLogger('error', ['Live preview is not active or accessible.']);
+                }
+            } catch (err) {
+                window.runtimeLogger('error', [err.message]);
+            }
+            this.value = '';
+        }
+    });
+
+
+    // --- INIT ---
+    require.config({ paths: { 'vs': 'https://unpkg.com/monaco-editor@latest/min/vs' }});
+    require(['vs/editor/editor.main'], function() {
+        const themes = ['dracula', 'monokai', 'solarized', 'synthwave'];
+        themes.forEach(t => {
+             monaco.editor.defineTheme(t, { base: 'vs-dark', inherit: true, rules: [], colors: {} });
+        });
+        
+        editor = monaco.editor.create(document.getElementById('monaco-container'), {
+            value: '', language: 'plaintext', theme: 'vs-dark',
+            automaticLayout: true, 
+            minimap: { enabled: true }, 
+            smoothScrolling: true, cursorBlinking: 'smooth', cursorSmoothCaretAnimation: 'on',
+            padding: { top: 10 },
+            fontSize: settings.fontSize,
+            wordWrap: settings.wordWrap ? 'on' : 'off'
+        });
+        
+        editor.addCommand(monaco.KeyMod.CtrlCmd | monaco.KeyCode.KeyS, () => saveTab(activeTabPath));
+        editor.addCommand(monaco.KeyMod.CtrlCmd | monaco.KeyCode.KeyP, toggleSearch);
+        editor.addCommand(monaco.KeyMod.CtrlCmd | monaco.KeyCode.KeyB, toggleSidebar);
+        
+        editor.onDidChangeModelContent(() => {
+            const tab = tabs.find(t => t.path === activeTabPath);
+            if (tab && !tab.isDirty) {
+                tab.isDirty = true;
+                renderTabs();
+            }
+            if (rightPanelMode === 'live') {
+                clearTimeout(window.livePreviewTimeout);
+                window.livePreviewTimeout = setTimeout(updateLivePreview, 1000); 
+            }
+            if (settings.autoSave && tab) {
+                clearTimeout(autoSaveTimer);
+                autoSaveTimer = setTimeout(() => saveTab(activeTabPath), 1000);
+            }
+        });
+
+        monaco.languages.registerLinkProvider('*', {
+            provideLinks: function(model) {
+                const links = [];
+                const text = model.getValue();
+                const regex = /(['"])([\w\d\.\-\/_]+)\1/g; 
+                let match;
+                while ((match = regex.exec(text)) !== null) {
+                    const rawPath = match[2];
+                    const resolved = resolvePath(activeTabPath, rawPath);
+                    const found = fileIndex.find(f => f.path.toLowerCase() === resolved.toLowerCase());
+                    if (found) {
+                        const start = model.getPositionAt(match.index + 1);
+                        const end = model.getPositionAt(match.index + 1 + rawPath.length);
+                        links.push({ range: { startLineNumber: start.lineNumber, startColumn: start.column, endLineNumber: end.lineNumber, endColumn: end.column }, tooltip: 'Open ' + found.path, handler: () => loadFile(found.handle, found.path) });
+                    }
+                }
+                return { links: links };
+            }
+        });
+
+        const req = indexedDB.open('WebIDE_DB', 1);
+        req.onsuccess = (e) => {
+            e.target.result.transaction('handles', 'readonly').objectStore('handles').get('last_project').onsuccess = (ev) => {
+                if (ev.target.result) document.getElementById('resumeSection').style.display = 'block';
+            };
+        };
+        req.onupgradeneeded = (e) => e.target.result.createObjectStore('handles');
+    });
+
+    // --- TAB MANAGEMENT ---
+    async function loadFile(handle, explicitPath) {
+        const path = explicitPath || (fileIndex.find(i => i.handle.name === handle.name) || {}).path;
+        const existingTab = tabs.find(t => t.path === path);
+        if (existingTab) { switchToTab(path); return; }
+
+        const ext = path.split('.').pop().toLowerCase();
+        const isMedia = AssetManager.isHeavy(ext);
+        
+        let model = null;
+        if (!isMedia) {
+            const file = await handle.getFile();
+            const text = await file.text();
+            const lang = ext === 'js' ? 'javascript' : ext === 'html' ? 'html' : ext === 'css' ? 'css' : 'json';
+            const uri = monaco.Uri.parse("file:///" + path);
+            model = monaco.editor.getModel(uri) || monaco.editor.createModel(text, lang, uri);
+        }
+
+        const newTab = { path, handle, model, viewState: null, isDirty: false, kind: isMedia ? 'media' : 'code', name: handle.name };
+        tabs.push(newTab);
+        renderTabs();
+        switchToTab(path);
+    }
+
+    async function switchToTab(path) {
+        if (activeTabPath) {
+            const currentTab = tabs.find(t => t.path === activeTabPath);
+            if (currentTab && currentTab.kind === 'code' && editor) currentTab.viewState = editor.saveViewState();
+        }
+        activeTabPath = path;
+        const tab = tabs.find(t => t.path === path);
+        renderTabs(); 
+        document.getElementById('emptyState').style.display = 'none';
+        document.getElementById('monaco-container').style.display = 'none';
+        document.getElementById('mediaContainer').style.display = 'none';
+
+        const ext = tab.path.split('.').pop().toLowerCase();
+        document.getElementById('lang-display').innerText = ext.toUpperCase();
+
+        if (tab.kind === 'media') {
+            document.getElementById('mediaContainer').style.display = 'flex';
+            const url = await AssetManager.fetchAndCache({ handle: tab.handle, path: tab.path });
+            const mediaContainer = document.getElementById('mediaContainer');
+            if (['png', 'jpg', 'jpeg', 'gif', 'svg', 'ico'].includes(ext)) {
+                mediaContainer.innerHTML = `<img src="${url}"><div style="margin-top:10px;color:gray;">${tab.name}</div>`;
+            } else {
+                mediaContainer.innerHTML = `<div class="audio-player-box"><div style="font-size:60px; margin-bottom:20px;">💿</div><audio controls autoplay src="${url}" style="width:300px; outline:none;"></audio><div style="margin-top:20px; color:var(--accent); font-weight:bold;">${tab.name}</div></div>`;
+            }
+        } else {
+            document.getElementById('monaco-container').style.display = 'block';
+            editor.setModel(tab.model);
+            if (tab.viewState) editor.restoreViewState(tab.viewState);
+            editor.focus();
+            if (rightPanelMode === 'live') updateLivePreview();
+        }
+    }
+
+    function closeTab(e, path) {
+        e.stopPropagation(); 
+        const tabIndex = tabs.findIndex(t => t.path === path);
+        if (tabIndex === -1) return;
+        if (activeTabPath === path) {
+            if (tabs.length > 1) {
+                const nextTab = tabs[tabIndex + 1] || tabs[tabIndex - 1];
+                switchToTab(nextTab.path);
+            } else {
+                activeTabPath = null;
+                document.getElementById('monaco-container').style.display = 'none';
+                document.getElementById('mediaContainer').style.display = 'none';
+                document.getElementById('emptyState').style.display = 'flex';
+                document.getElementById('lang-display').innerText = 'TXT';
+            }
+        }
+        const tab = tabs[tabIndex];
+        if (tab.model) tab.model.dispose(); 
+        tabs.splice(tabIndex, 1);
+        renderTabs();
+    }
+
+    function renderTabs() {
+        const container = document.getElementById('tabBar');
+        container.innerHTML = '';
+        tabs.forEach(tab => {
+            const el = document.createElement('div');
+            el.className = `tab ${tab.path === activeTabPath ? 'active' : ''} ${tab.isDirty ? 'dirty' : ''}`;
+            el.title = tab.path;
+            el.onclick = () => switchToTab(tab.path);
+            el.innerHTML = `<span class="tab-name">${tab.name}</span><span class="unsaved-dot"></span><span class="tab-close" onclick="closeTab(event, '${tab.path}')">✕</span>`;
+            container.appendChild(el);
+        });
+    }
+
+    async function saveTab(path) {
+        const tab = tabs.find(t => t.path === path);
+        if (!tab || tab.kind !== 'code') return;
+        try {
+            const w = await tab.handle.createWritable();
+            await w.write(tab.model.getValue());
+            await w.close();
+            tab.isDirty = false;
+            renderTabs();
+            if (AssetManager.cache.has(tab.path)) URL.revokeObjectURL(AssetManager.cache.get(tab.path));
+            AssetManager.cache.delete(tab.path);
+            if (AssetManager.isCode(tab.path.split('.').pop())) await AssetManager.fetchAndCache({handle: tab.handle, path: tab.path});
+            if (rightPanelMode === 'live') updateLivePreview();
+        } catch (e) { console.error("Save failed", e); alert("Failed to save file."); }
+    }
+
+    // --- SETTINGS ---
+    function openSettings() { document.getElementById('settingsModal').style.display = 'flex'; }
+    function toggleAutoSave() { settings.autoSave = document.getElementById('settingAutoSave').checked; }
+    function toggleWordWrap() { 
+        settings.wordWrap = document.getElementById('settingWordWrap').checked; 
+        if (editor) editor.updateOptions({ wordWrap: settings.wordWrap ? 'on' : 'off' });
+    }
+    function changeFontSize(val) {
+        settings.fontSize = parseInt(val);
+        if (editor) editor.updateOptions({ fontSize: settings.fontSize });
+    }
+
+    // --- CORE FUNCTIONS ---
+    function toggleSidebar() {
+        document.getElementById('mainSidebar').classList.toggle('collapsed');
+        setTimeout(() => editor && editor.layout(), 310); 
+    }
+    
+    async function openFolder() {
+        try {
+            const handle = await window.showDirectoryPicker();
+            await loadProject(handle);
+        } catch (e) { console.error(e); }
+    }
+
+    async function resumeProject() {
+        const req = indexedDB.open('WebIDE_DB', 1);
+        req.onsuccess = (e) => {
+            e.target.result.transaction('handles', 'readonly').objectStore('handles').get('last_project').onsuccess = async (ev) => {
+                const handle = ev.target.result;
+                if (handle && await handle.requestPermission({ mode: 'readwrite' }) === 'granted') await loadProject(handle);
+            };
+        };
+    }
+
+    async function loadProject(handle) {
+        projectRootHandle = handle; 
+        const req = indexedDB.open('WebIDE_DB', 1);
+        req.onsuccess = (e) => e.target.result.transaction('handles', 'readwrite').objectStore('handles').put(handle, 'last_project');
+        
+        document.getElementById('fileExplorer').innerHTML = '';
+        fileIndex = []; tabs = []; renderTabs();
+        document.getElementById('monaco-container').style.display = 'none';
+        document.getElementById('mediaContainer').style.display = 'none';
+        document.getElementById('emptyState').style.display = 'flex';
+
+        AssetManager.clear();
+        await processEntry(handle, document.getElementById('fileExplorer'), "");
+        await indexAllFiles(handle, "");
+        
+        document.getElementById('loadingOverlay').style.display = 'flex';
+        const itemsToLoad = fileIndex.filter(item => {
+            const ext = item.path.split('.').pop().toLowerCase();
+            return AssetManager.isHeavy(ext) || AssetManager.isCode(ext);
+        }).sort((a, b) => {
+            const extA = a.path.split('.').pop().toLowerCase();
+            const extB = b.path.split('.').pop().toLowerCase();
+            const isHeavyA = AssetManager.isHeavy(extA);
+            const isHeavyB = AssetManager.isHeavy(extB);
+            if (isHeavyA && !isHeavyB) return -1;
+            if (!isHeavyA && isHeavyB) return 1;
+            return 0;
+        });
+
+        const chunkSize = 50;
+        for (let i = 0; i < itemsToLoad.length; i += chunkSize) {
+            const chunk = itemsToLoad.slice(i, i + chunkSize);
+            await Promise.all(chunk.map(item => AssetManager.fetchAndCache(item)));
+            document.getElementById('loadingText').innerText = `Loaded ${Math.min(i + chunkSize, itemsToLoad.length)} / ${itemsToLoad.length} assets...`;
+        }
+        document.getElementById('loadingOverlay').style.display = 'none';
+    }
+
+    async function processEntry(handle, parent, currentPath) {
+        for await (const entry of handle.values()) {
+            const div = document.createElement('div');
+            div.className = `tree-item ${entry.kind}`;
+            div.textContent = entry.kind === 'directory' ? `📁 ${entry.name}` : `📄 ${entry.name}`;
+            parent.appendChild(div);
+            const fullPath = currentPath ? `${currentPath}/${entry.name}` : entry.name;
+            if (entry.kind === 'directory') {
+                const sub = document.createElement('div'); sub.style.display = 'none'; sub.style.paddingLeft = '15px';
+                parent.appendChild(sub);
+                div.onclick = () => { 
+                    const open = sub.style.display === 'block'; sub.style.display = open ? 'none' : 'block'; 
+                    if(!open && !sub.hasChildNodes()) processEntry(entry, sub, fullPath); 
+                };
+            } else { div.onclick = () => loadFile(entry, fullPath); }
+        }
+    }
+
+    async function indexAllFiles(dirHandle, pathPrefix) {
+        for await (const entry of dirHandle.values()) {
+            const fullPath = pathPrefix ? `${pathPrefix}/${entry.name}` : entry.name;
+            if (entry.kind === 'file') fileIndex.push({ handle: entry, path: fullPath });
+            else await indexAllFiles(entry, fullPath);
+        }
+    }
+
+    function resolvePath(currentFilePath, targetPath) {
+        if (!projectRootHandle) return targetPath;
+        targetPath = decodeURIComponent(targetPath);
+        if (targetPath.startsWith("/")) return targetPath.substring(1);
+        let baseParts = currentFilePath ? currentFilePath.split('/') : [];
+        baseParts.pop();
+        const targetParts = targetPath.split('/');
+        for (let part of targetParts) {
+            if (part === '.') continue;
+            if (part === '..') baseParts.pop();
+            else baseParts.push(part);
+        }
+        return baseParts.join('/');
+    }
+
+    // --- LIVE PREVIEW ---
+    async function updateLivePreview() {
+        if (rightPanelMode !== 'live' || !activeTabPath) return;
+
+        const currentTab = tabs.find(t => t.path === activeTabPath);
+        if (currentTab && AssetManager.isCode(activeTabPath.split('.').pop())) {
+             const content = currentTab.model.getValue();
+             const blob = new Blob([content], { type: AssetManager.getMimeType(activeTabPath.split('.').pop()) });
+             const url = URL.createObjectURL(blob);
+             if (AssetManager.cache.has(activeTabPath)) URL.revokeObjectURL(AssetManager.cache.get(activeTabPath));
+             AssetManager.cache.set(activeTabPath, url);
+             AssetManager.cache.set(activeTabPath.toLowerCase(), url);
+        }
+
+        let htmlContent = "";
+        if (activeTabPath.endsWith('.html')) { htmlContent = editor.getValue(); } else { return; }
+
+        const parser = new DOMParser();
+        const doc = parser.parseFromString(htmlContent, 'text/html');
+        const replaceAttribute = (el, attr) => {
+            if (el.hasAttribute(attr)) {
+                const rawVal = el.getAttribute(attr);
+                const resolvedPath = resolvePath(activeTabPath, rawVal);
+                const blobUrl = AssetManager.lookup(resolvedPath);
+                if (blobUrl) el.setAttribute(attr, blobUrl);
+                else if (!rawVal.startsWith('http') && !rawVal.startsWith('#') && !rawVal.startsWith('data:')) el.setAttribute(attr, "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNkYAAAAAYAAjCB0C8AAAAASUVORK5CYII=");
+            }
+        };
+        doc.querySelectorAll('img, script, link, audio, video, source, a').forEach(el => {
+            replaceAttribute(el, 'src'); replaceAttribute(el, 'href'); replaceAttribute(el, 'poster');
+        });
+
+        // INJECTED SCRIPT: Handles Assets AND Console
+        const injectionScript = `
+            <script>
+                // 1. Console Interception
+                (function() {
+                    const methods = ['log', 'error', 'warn', 'info'];
+                    methods.forEach(method => {
+                        const original = console[method];
+                        console[method] = function(...args) {
+                            original.apply(console, args);
+                            if(window.parent && window.parent.runtimeLogger) {
+                                window.parent.runtimeLogger(method, args);
+                            }
+                        };
+                    });
+                    window.addEventListener('error', function(e) {
+                        if(window.parent && window.parent.runtimeLogger) {
+                            window.parent.runtimeLogger('error', [e.message]);
+                        }
+                    });
+                })();
+
+                // 2. Asset Management
+                window.__CURRENT_FILE_PATH__ = "${activeTabPath}";
+                window.__ASSET_MAP__ = ${JSON.stringify(Object.fromEntries(AssetManager.cache))};
+                function resolveAndLookup(rawPath) {
+                    if (!rawPath || typeof rawPath !== 'string') return rawPath;
+                    if (rawPath.startsWith('blob:') || rawPath.startsWith('http') || rawPath.startsWith('data:')) return rawPath;
+                    let cleanTarget = decodeURIComponent(rawPath.split('?')[0].split('#')[0]);
+                    let resolved = "";
+                    if (cleanTarget.startsWith('/')) { resolved = cleanTarget.substring(1); } 
+                    else {
+                        let baseParts = window.__CURRENT_FILE_PATH__ ? window.__CURRENT_FILE_PATH__.split('/') : [];
+                        baseParts.pop();
+                        const targetParts = cleanTarget.split('/');
+                        for (let part of targetParts) {
+                            if (part === '.') continue;
+                            if (part === '..') { if (baseParts.length > 0) baseParts.pop(); } 
+                            else { baseParts.push(part); }
+                        }
+                        resolved = baseParts.join('/');
+                    }
+                    const found = window.__ASSET_MAP__[resolved] || window.__ASSET_MAP__[resolved.toLowerCase()];
+                    if(!found) return "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNkYAAAAAYAAjCB0C8AAAAASUVORK5CYII=";
+                    return found;
+                }
+                new MutationObserver((mutations) => {
+                    mutations.forEach((mutation) => {
+                        mutation.addedNodes.forEach((node) => {
+                            if (node.nodeType === 1) { 
+                                ['src', 'href'].forEach(attr => {
+                                    if(node.hasAttribute(attr)) node.setAttribute(attr, resolveAndLookup(node.getAttribute(attr)));
+                                });
+                            }
+                        });
+                    });
+                }).observe(document.documentElement, { childList: true, subtree: true });
+                const OriginalImage = window.Image;
+                window.Image = function(w, h) {
+                    const img = new OriginalImage(w, h);
+                    Object.defineProperty(img, 'src', {
+                        get: function() { return this.getAttribute('src'); },
+                        set: function(val) { this.setAttribute('src', resolveAndLookup(val)); }
+                    });
+                    return img;
+                };
+            <\/script>
+        `;
+
+        const finalHTML = injectionScript + doc.documentElement.outerHTML;
+        const frame = document.getElementById('webFrame');
+        frame.removeAttribute('src');
+        frame.srcdoc = finalHTML;
+    }
+    
+    function fullRefresh() { AssetManager.clear(); loadProject(projectRootHandle); }
+
+    // --- UI HELPERS ---
+    function toggleConsole() {
+        const p = document.getElementById('consolePane');
+        p.className = p.className.includes('open') ? 'console-pane' : 'console-pane open';
+        setTimeout(() => editor.layout(), 310);
+    }
+    function toggleSearch() {
+        const box = document.getElementById('searchBoxContainer');
+        if (!box.classList.contains('visible')) {
+            box.classList.add('visible'); document.getElementById('searchInput').focus();
+        } else {
+            box.classList.remove('visible');
+            document.getElementById('fileExplorer').style.display = 'block';
+            document.getElementById('searchResults').classList.remove('visible');
+        }
+    }
+    const searchInput = document.getElementById('searchInput');
+    searchInput.addEventListener('input', (e) => {
+        const query = e.target.value.toLowerCase();
+        const results = document.getElementById('searchResults');
+        const explorer = document.getElementById('fileExplorer');
+        if(query.length === 0) { explorer.style.display = 'block'; results.classList.remove('visible'); return; }
+        explorer.style.display = 'none'; results.classList.add('visible'); results.innerHTML = '';
+        const matches = fileIndex.filter(item => item.path.toLowerCase().includes(query));
+        matches.forEach(item => {
+            const div = document.createElement('div'); div.className = 'tree-item search-match';
+            div.innerHTML = `<span>📄</span> <span style="margin-left:5px; font-size:11px;">${item.path}</span>`;
+            div.onclick = () => { loadFile(item.handle, item.path); toggleSearch(); };
+            results.appendChild(div);
+        });
+    });
+    searchInput.addEventListener('keydown', (e) => {
+        if (e.key === 'Enter') { e.preventDefault(); const f = document.getElementById('searchResults').firstElementChild; if(f) f.click(); }
+    });
+    
+    function openPanel(mode) {
+        const panel = document.getElementById('rightPanel');
+        panel.classList.add('open'); rightPanelMode = mode; setTimeout(() => editor.layout(), 310);
+        const frame = document.getElementById('webFrame');
+        const urlInput = document.getElementById('urlInput');
+        if (mode === 'browser') {
+            document.getElementById('browserControls').style.display = 'flex'; document.getElementById('livePreviewControls').style.display = 'none';
+            frame.removeAttribute('srcdoc');
+            if (!frame.src || frame.src === 'about:blank') { urlInput.value = 'https://mysingingmonsters.fandom.com/wiki/My_Singing_Monsters_Wiki'; loadUrl(); }
+        } else {
+            document.getElementById('browserControls').style.display = 'none'; document.getElementById('livePreviewControls').style.display = 'flex';
+            frame.removeAttribute('src'); frame.src = ''; updateLivePreview();
+        }
+    }
+    function startLiveServer() { openPanel('live'); }
+    function openBrowser() { openPanel('browser'); }
+    function loadUrl() {
+        const frame = document.getElementById('webFrame');
+        let url = document.getElementById('urlInput').value;
+        if (!url.startsWith('http')) url = 'https://' + url;
+        if (document.getElementById('proxyCheck').checked) frame.src = 'https://corsproxy.io/?url=https://example.com';
+        else frame.src = url;
+    }
+    function browserRefresh() { if(rightPanelMode === 'browser') loadUrl(); else updateLivePreview(); }
+    function browserBack() { try { document.getElementById('webFrame').contentWindow.history.back(); } catch(e){} }
+    function closeRightPanel() { document.getElementById('rightPanel').classList.remove('open'); rightPanelMode = 'none'; document.getElementById('webFrame').removeAttribute('src'); document.getElementById('webFrame').removeAttribute('srcdoc'); setTimeout(() => editor.layout(), 310); }
+    function changeTheme(themeName) {
+        const themes = ['dracula', 'monokai', 'solarized', 'synthwave'];
+        if (editor) monaco.editor.setTheme(themeName);
+        if(themeName === 'vs-dark') document.documentElement.style.cssText = "--bg-app: #1e1e1e; --bg-sidebar: #252526; --bg-header: #3c3c3c; --text-main: #cccccc; --accent: #007acc; --border: #3e3e42; --hover: #2a2d2e; --shadow: 0 4px 6px rgba(0,0,0,0.3); --tab-inactive: #2d2d2d; --tab-active: #1e1e1e;";
+        if(themeName === 'vs-light') document.documentElement.style.cssText = "--bg-app: #ffffff; --bg-sidebar: #f3f3f3; --bg-header: #e8e8e8; --text-main: #333333; --accent: #007acc; --border: #cecece; --hover: #e4e4e4; --shadow: 0 2px 4px rgba(0,0,0,0.1); --tab-inactive: #e0e0e0; --tab-active: #ffffff;";
+        if(themeName === 'dracula') document.documentElement.style.cssText = "--bg-app: #282a36; --bg-sidebar: #21222c; --bg-header: #191a21; --text-main: #f8f8f2; --accent: #bd93f9; --border: #44475a; --hover: #44475a; --shadow: 0 4px 6px rgba(0,0,0,0.4); --tab-inactive: #343746; --tab-active: #282a36;";
+        if(themeName === 'monokai') document.documentElement.style.cssText = "--bg-app: #272822; --bg-sidebar: #1e1f1c; --bg-header: #171814; --text-main: #f8f8f2; --accent: #a6e22e; --border: #3e3d32; --hover: #3e3d32; --shadow: 0 4px 6px rgba(0,0,0,0.4); --tab-inactive: #2f3129; --tab-active: #272822;";
+        if(themeName === 'solarized') document.documentElement.style.cssText = "--bg-app: #002b36; --bg-sidebar: #073642; --bg-header: #002b36; --text-main: #839496; --accent: #268bd2; --border: #073642; --hover: #586e75; --shadow: 0 4px 6px rgba(0,0,0,0.3); --tab-inactive: #003847; --tab-active: #002b36;";
+        if(themeName === 'synthwave') document.documentElement.style.cssText = "--bg-app: #262335; --bg-sidebar: #241b2f; --bg-header: #2a2139; --text-main: #fff; --accent: #ff7edb; --border: #34294f; --hover: #362c50; --shadow: 0 0 10px rgba(255, 126, 219, 0.2); --tab-inactive: #3a314f; --tab-active: #262335;";
+    }
+</script>
+</body>
+</html>
