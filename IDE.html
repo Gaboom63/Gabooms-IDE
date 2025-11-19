@@ -144,6 +144,7 @@
 <header>
     <div class="header-left">
         <button class="menu-btn" onclick="toggleSidebar()" title="Toggle Sidebar (Ctrl+B)">☰</button>
+        <button class="menu-btn" onclick="openFolder()">📂 Open Folder</button>
         <button class="menu-btn" onclick="openSettings()">⚙️ Settings</button>
     </div>
     <div class="header-right">
@@ -249,8 +250,8 @@
     <div class="modal">
         <h3>Settings</h3>
         <div class="settings-tab-bar">
-        <button class="settings-tab-btn" id="tabGeneral" onclick="showSettingsTab('general', this)">General</button>
-        <button class="settings-tab-btn" id="tabColor" onclick="showSettingsTab('color', this)">Colors (Custom)</button>
+            <button class="settings-tab-btn" id="tabGeneral" onclick="showSettingsTab('general', this)">General</button>
+            <button class="settings-tab-btn" id="tabColors" onclick="showSettingsTab('colors', this)">Colors (Custom)</button>
         </div>
         <div class="settings-content">
             <div id="generalSettings">
@@ -279,8 +280,8 @@
                 </div>
             </div>
             
-            <div id="colorSettings">
-                <p style="font-size:12px; margin-bottom: 20px;">Edit these colors to customize the "Custom" theme. Changes are applied immediately.</p>
+<div id="colorSettings" class="active">
+            <p style="font-size:12px; margin-bottom: 20px;">Edit these colors to customize the "Custom" theme. Changes are applied immediately.</p>
                 <div class="color-grid">
                     <div class="color-group">
                         <h4>UI Colors</h4>
@@ -751,7 +752,7 @@
 
         // FIX: Ensure the correct tab is displayed based on the current theme or default to General.
         const currentTheme = localStorage.getItem('webIDE_currentTheme');
-        const defaultTabId = (currentTheme === 'custom' || !currentTheme) ? 'color' : 'general';
+        const defaultTabId = (currentTheme === 'custom' || !currentTheme) ? 'colors' : 'general';
         
         const buttonToClick = document.getElementById('tab' + defaultTabId.charAt(0).toUpperCase() + defaultTabId.slice(1));
         
