@@ -3,19 +3,15 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Local Web IDE v15.2 (Console Exec & No Bars)</title>
+    <title>Local Web IDE v15.3 (Safe Save Edition)</title>
     <script src="https://unpkg.com/monaco-editor@latest/min/vs/loader.js"></script>
     <style>
         :root { --bg-app: #1e1e1e; --bg-sidebar: #252526; --bg-header: #3c3c3c; --text-main: #cccccc; --accent: #007acc; --border: #3e3e42; --hover: #2a2d2e; --input-bg: #3c3c3c; --shadow: 0 4px 6px rgba(0,0,0,0.3); --tab-inactive: #2d2d2d; --tab-active: #1e1e1e; }
         * { box-sizing: border-box; }
         
         /* --- SCROLLBAR NUKE ZONE --- */
-        /* 1. Hide Native Browser Scrollbars */
         ::-webkit-scrollbar { display: none; }
         * { -ms-overflow-style: none; scrollbar-width: none; }
-
-        /* 2. Hide Monaco Editor Scrollbars (The "Dots" and Gray Bars) */
-        /* This hides the moving slider but keeps the container for mouse events */
         .monaco-editor .scrollbar .slider { background: transparent !important; }
         .monaco-editor .scrollbar .scrollbar-background { background: transparent !important; }
         .monaco-editor .decorationsOverviewRuler { display: none !important; } 
@@ -62,13 +58,21 @@
         .tab:hover { background-color: var(--hover); }
         .tab.active { background-color: var(--tab-active); color: var(--text-main); border-top: 2px solid var(--accent); }
         .tab-name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; margin-right: 8px; }
-        .tab-close { margin-left: auto; font-size: 14px; border-radius: 50%; padding: 0 4px; color: inherit; opacity: 0.7; }
+        
+        /* Close Button & Unsaved Dot Logic */
+        .tab-close { margin-left: auto; font-size: 14px; border-radius: 50%; padding: 0 4px; color: inherit; opacity: 0.7; display: block; }
         .tab-close:hover { background: rgba(255,255,255,0.2); opacity: 1; }
-        .unsaved-dot { width: 8px; height: 8px; background-color: white; border-radius: 50%; display: none; margin-left: 5px;}
+        
+        /* The Unsaved Dot */
+        .unsaved-dot { width: 8px; height: 8px; background-color: white; border-radius: 50%; display: none; margin-left: auto; }
+        
+        /* Dirty State: Show Dot, Hide X (unless hovered) */
         .tab.dirty .unsaved-dot { display: block; }
         .tab.dirty .tab-close { display: none; }
-        .tab:hover .unsaved-dot { display: none; }
-        .tab:hover .tab-close { display: block; }
+        
+        /* Hover on Dirty Tab: Show X again */
+        .tab.dirty:hover .unsaved-dot { display: none; }
+        .tab.dirty:hover .tab-close { display: block; }
 
         .workspace-area { flex: 1; display: flex; flex-direction: row; background-color: var(--bg-app); overflow: hidden; }
         .editor-column { flex: 1; display: flex; flex-direction: column; min-width: 0; position: relative; }
@@ -186,7 +190,7 @@
                 <div id="monaco-container" style="flex:1; display:none;"></div>
                 <div id="mediaContainer"></div>
                 <div id="emptyState" style="flex:1; display:flex; align-items:center; justify-content:center; opacity:0.5; flex-direction:column;">
-                    <h2>Web IDE v15.2</h2>
+                    <h2>Web IDE v15.3</h2>
                     <p>Open a folder to start.</p>
                     <div id="resumeSection" style="display:none; text-align:center; margin-top:20px;">
                         <p>Welcome back!</p>
@@ -280,8 +284,8 @@
                 </div>
             </div>
             
-<div id="colorSettings" class="active">
-            <p style="font-size:12px; margin-bottom: 20px;">Edit these colors to customize the "Custom" theme. Changes are applied immediately.</p>
+            <div id="colorSettings">
+                <p style="font-size:12px; margin-bottom: 20px;">Edit these colors to customize the "Custom" theme. Changes are applied immediately.</p>
                 <div class="color-grid">
                     <div class="color-group">
                         <h4>UI Colors</h4>
@@ -339,6 +343,7 @@
     let fileIndex = []; 
     let projectRootHandle = null; 
     let rightPanelMode = 'none';
+    let autoSaveTimer = null;
 
     // Settings Defaults & Custom Color Storage
     let settings = {
@@ -350,15 +355,24 @@
             sidebar: '#252526',
             accent: '#007acc',
             text: '#cccccc',
-            keyword: '#C586C0', // VS Code default pink for keywords
-            string: '#CE9178',   // VS Code default orange for strings
-            comment: '#6A9955',  // VS Code default green for comments
-            function: '#DCDCAA'  // VS Code default yellow for functions
+            keyword: '#C586C0',
+            string: '#CE9178',
+            comment: '#6A9955',
+            function: '#DCDCAA'
         }
     };
-    let autoSaveTimer = null;
-    
-    // --- ASSET MANAGER (Omitted for brevity, assume content is the same) ---
+
+    // --- BROWSER EXIT PROTECTION ---
+    // Prevents closing the window/tab if any files are unsaved
+    window.onbeforeunload = function(e) {
+        if (tabs.some(t => t.isDirty)) {
+            e.preventDefault();
+            e.returnValue = 'You have unsaved changes!';
+            return 'You have unsaved changes!';
+        }
+    };
+
+    // --- ASSET MANAGER ---
     const AssetManager = {
         cache: new Map(), 
         clear() { this.cache.forEach(url => URL.revokeObjectURL(url)); this.cache.clear(); },
@@ -403,7 +417,7 @@
         lookup(path) { if (!path) return null; return this.cache.get(path) || this.cache.get(path.toLowerCase()); }
     };
 
-    // --- SYSTEM LOGGER (Omitted for brevity, assume content is the same) ---
+    // --- SYSTEM LOGGER ---
     window.runtimeLogger = (type, args) => {
         const out = document.getElementById('consoleOutput');
         const line = document.createElement('div');
@@ -414,8 +428,8 @@
         
         if(type==='error') line.style.color = '#ff6b6b';
         else if(type==='warn') line.style.color = '#feca57';
-        else if(type==='>') line.style.color = '#007acc'; // User input
-        else if(type==='<') line.style.color = '#888'; // Return value
+        else if(type==='>') line.style.color = '#007acc'; 
+        else if(type==='<') line.style.color = '#888'; 
         else line.style.color = '#cccccc';
 
         const text = args.map(arg => {
@@ -432,15 +446,11 @@
         out.scrollTop = out.scrollHeight;
     };
 
-    // --- CONSOLE INPUT HANDLER (Omitted for brevity, assume content is the same) ---
     document.getElementById('consoleInput').addEventListener('keydown', function(e) {
         if (e.key === 'Enter') {
             const code = this.value;
             if (!code) return;
-            
-            // Log input
             window.runtimeLogger('>', [code]);
-            
             try {
                 const frame = document.getElementById('webFrame');
                 if (rightPanelMode === 'live' && frame.contentWindow) {
@@ -472,11 +482,7 @@
                     { token: 'identifier', foreground: 'f8f8f2' },
                     { token: 'type.function', foreground: '50fa7b' } 
                 ],
-                colors: {
-                    'editor.background': '#282a36',
-                    'editor.foreground': '#f8f8f2',
-                    'editorLineNumber.foreground': '#6272a4'
-                }
+                colors: { 'editor.background': '#282a36', 'editor.foreground': '#f8f8f2', 'editorLineNumber.foreground': '#6272a4' }
             },
             'monokai': {
                 base: 'vs-dark', inherit: true,
@@ -489,11 +495,7 @@
                     { token: 'identifier', foreground: 'f8f8f2' },
                     { token: 'type.function', foreground: 'a6e22e' }
                 ],
-                colors: {
-                    'editor.background': '#272822',
-                    'editor.foreground': '#f8f8f2',
-                    'editorLineNumber.foreground': '#75715e'
-                }
+                colors: { 'editor.background': '#272822', 'editor.foreground': '#f8f8f2', 'editorLineNumber.foreground': '#75715e' }
             },
             'solarized': { base: 'vs-dark', inherit: true, rules: [], colors: { 'editor.background': '#002b36', 'editor.foreground': '#839496' } },
             'synthwave': { base: 'vs-dark', inherit: true, rules: [], colors: { 'editor.background': '#262335', 'editor.foreground': '#fff' } },
@@ -502,17 +504,12 @@
             'ambiance': { base: 'vs-dark', inherit: true, rules: [], colors: { 'editor.background': '#1c1c1c', 'editor.foreground': '#f8f8f8' } }
         };
 
-        // Define all fixed themes
-        Object.keys(themeDefinitions).forEach(t => {
-             monaco.editor.defineTheme(t, themeDefinitions[t]);
-        });
+        Object.keys(themeDefinitions).forEach(t => { monaco.editor.defineTheme(t, themeDefinitions[t]); });
         
-        // Define or update the CUSTOM theme based on current settings
         monaco.editor.defineTheme('custom', {
             base: 'vs-dark', 
             inherit: false, 
             rules: [
-                // Monaco expects hex without # for token foreground colors
                 { token: 'comment', foreground: settings.customTheme.comment.substring(1) },
                 { token: 'keyword', foreground: settings.customTheme.keyword.substring(1) }, 
                 { token: 'string', foreground: settings.customTheme.string.substring(1) },
@@ -545,31 +542,44 @@
             wordWrap: settings.wordWrap ? 'on' : 'off'
         });
         
+        // --- NEW: CHANGE LISTENER FOR SAVING LOGIC ---
+        editor.onDidChangeModelContent(() => {
+            const tab = tabs.find(t => t.path === activeTabPath);
+            if (!tab) return;
+
+            if (settings.autoSave) {
+                // Debounce auto-save
+                if (autoSaveTimer) clearTimeout(autoSaveTimer);
+                autoSaveTimer = setTimeout(() => {
+                    saveTab(activeTabPath);
+                }, 1000); // Save 1 second after stopping typing
+            } else {
+                // Manual Save Mode: Mark dirty immediately
+                if (!tab.isDirty) {
+                    tab.isDirty = true;
+                    renderTabs(); // Update UI to show white circle
+                }
+            }
+        });
+
         editor.addCommand(monaco.KeyMod.CtrlCmd | monaco.KeyCode.KeyS, () => saveTab(activeTabPath));
         editor.addCommand(monaco.KeyMod.CtrlCmd | monaco.KeyCode.KeyP, toggleSearch);
         editor.addCommand(monaco.KeyMod.CtrlCmd | monaco.KeyCode.KeyB, toggleSidebar);
 
-        // --- Logic for Ctrl/Cmd-Click to open file (Omitted for brevity, assume content is the same) ---
         let currentLinks = []; 
-        
         editor.onMouseDown(e => {
             if (!e.event.ctrlKey && !e.event.metaKey) return; 
             if (e.target.type !== monaco.editor.MouseTargetType.CONTENT_TEXT) return;
-
             const model = editor.getModel();
             const pos = e.target.position;
             const offset = model.getOffsetAt(pos);
-
             for (const link of currentLinks) {
                 const start = model.getOffsetAt(new monaco.Position(link.range.startLineNumber, link.range.startColumn));
                 const end = model.getOffsetAt(new monaco.Position(link.range.endLineNumber, link.range.endColumn));
-                
                 if (offset >= start && offset <= end) {
                     const filePath = link.url.substring("file://".length); 
                     const found = fileIndex.find(f => f.path.toLowerCase() === filePath.toLowerCase());
-                    if (found) {
-                        loadFile(found.handle, found.path); 
-                    }
+                    if (found) loadFile(found.handle, found.path); 
                     e.event.preventDefault(); 
                     break;
                 }
@@ -583,35 +593,23 @@
                 let match;
                 const links = [];
                 currentLinks = []; 
-
                 while ((match = regex.exec(text)) !== null) {
                     const rawPath = match[2];
                     const resolved = resolvePath(activeTabPath, rawPath);
                     const found = fileIndex.find(f => f.path.toLowerCase() === resolved.toLowerCase());
                     if (!found) continue;
-
                     const start = model.getPositionAt(match.index + 1);
                     const end = model.getPositionAt(match.index + 1 + rawPath.length);
-
                     const link = {
-                        range: {
-                            startLineNumber: start.lineNumber,
-                            startColumn: start.column,
-                            endLineNumber: end.lineNumber,
-                            endColumn: end.column
-                        },
-                        tooltip: "Open " + found.path,
-                        url: "file://" + found.path 
+                        range: { startLineNumber: start.lineNumber, startColumn: start.column, endLineNumber: end.lineNumber, endColumn: end.column },
+                        tooltip: "Open " + found.path, url: "file://" + found.path 
                     };
-
-                    links.push(link);
-                    currentLinks.push(link);
+                    links.push(link); currentLinks.push(link);
                 }
                 return { links };
             }
         });
         
-        // Load initial settings and theme
         loadSettingsFromStorage();
         applySettingsToUI();
         
@@ -624,7 +622,7 @@
         req.onupgradeneeded = (e) => e.target.result.createObjectStore('handles');
     });
 
-    // --- TAB MANAGEMENT (Omitted for brevity, assume content is the same) ---
+    // --- TAB MANAGEMENT ---
     async function loadFile(handle, explicitPath) {
         const path = explicitPath || (fileIndex.find(i => i.handle.name === handle.name) || {}).path;
         const existingTab = tabs.find(t => t.path === path);
@@ -681,10 +679,20 @@
         }
     }
 
+    // --- UPDATED: SAFER CLOSE TAB LOGIC ---
     function closeTab(e, path) {
         e.stopPropagation(); 
         const tabIndex = tabs.findIndex(t => t.path === path);
         if (tabIndex === -1) return;
+        
+        const tab = tabs[tabIndex];
+        
+        // CHECK FOR DIRTY STATE BEFORE CLOSING
+        if (tab.isDirty) {
+            const confirmClose = confirm(`"${tab.name}" has unsaved changes. Are you sure you want to close it? Changes will be lost.`);
+            if (!confirmClose) return;
+        }
+
         if (activeTabPath === path) {
             if (tabs.length > 1) {
                 const nextTab = tabs[tabIndex + 1] || tabs[tabIndex - 1];
@@ -697,7 +705,7 @@
                 document.getElementById('lang-display').innerText = 'TXT';
             }
         }
-        const tab = tabs[tabIndex];
+        
         if (tab.model) tab.model.dispose(); 
         tabs.splice(tabIndex, 1);
         renderTabs();
@@ -723,8 +731,11 @@
             const w = await tab.handle.createWritable();
             await w.write(tab.model.getValue());
             await w.close();
+            
+            // Mark as clean immediately after successful save
             tab.isDirty = false;
-            renderTabs();
+            renderTabs(); // Removes the white dot
+
             if (AssetManager.cache.has(tab.path)) URL.revokeObjectURL(AssetManager.cache.get(tab.path));
             AssetManager.cache.delete(tab.path);
             if (AssetManager.isCode(tab.path.split('.').pop())) await AssetManager.fetchAndCache({handle: tab.handle, path: tab.path});
@@ -734,11 +745,9 @@
 
     // --- SETTINGS ---
     function openSettings() { 
-        // Populate input fields with current settings
         document.getElementById('settingAutoSave').checked = settings.autoSave;
         document.getElementById('settingWordWrap').checked = settings.wordWrap;
         document.getElementById('settingFontSize').value = settings.fontSize;
-        
         document.getElementById('colorApp').value = settings.customTheme.app;
         document.getElementById('colorSidebar').value = settings.customTheme.sidebar;
         document.getElementById('colorAccent').value = settings.customTheme.accent;
@@ -747,40 +756,21 @@
         document.getElementById('colorString').value = settings.customTheme.string;
         document.getElementById('colorComment').value = settings.customTheme.comment;
         document.getElementById('colorFunction').value = settings.customTheme.function;
-        
         document.getElementById('settingsModal').style.display = 'flex'; 
-
-        // FIX: Ensure the correct tab is displayed based on the current theme or default to General.
         const currentTheme = localStorage.getItem('webIDE_currentTheme');
         const defaultTabId = (currentTheme === 'custom' || !currentTheme) ? 'colors' : 'general';
-        
         const buttonToClick = document.getElementById('tab' + defaultTabId.charAt(0).toUpperCase() + defaultTabId.slice(1));
-        
-        // This explicitly calls the function to activate the tab's button AND content
-        if (buttonToClick) {
-            showSettingsTab(defaultTabId, buttonToClick);
-        } else {
-            // Fallback: Ensure General is shown if logic fails
-            showSettingsTab('general', document.getElementById('tabGeneral'));
-        }
+        if (buttonToClick) showSettingsTab(defaultTabId, buttonToClick);
+        else showSettingsTab('general', document.getElementById('tabGeneral'));
     }
     
-    // FIX: Refactored showSettingsTab for safer DOM access (Addresses the `null` error)
     function showSettingsTab(tabId, button) {
-        // Deactivate all buttons
         document.querySelectorAll('.settings-tab-btn').forEach(btn => btn.classList.remove('active'));
-        
-        // Target known content divs explicitly to safely hide them
         const generalDiv = document.getElementById('generalSettings');
         const colorDiv = document.getElementById('colorSettings');
-        
         if (generalDiv) generalDiv.classList.remove('active');
         if (colorDiv) colorDiv.classList.remove('active');
-        
-        // Activate the clicked button
         if (button) button.classList.add('active');
-        
-        // Show the corresponding content div
         const targetDiv = document.getElementById(tabId + 'Settings');
         if (targetDiv) targetDiv.classList.add('active');
     }
@@ -788,6 +778,10 @@
     function toggleAutoSave() { 
         settings.autoSave = document.getElementById('settingAutoSave').checked;
         saveSettingsToStorage(); 
+        // If turned on, save all dirty tabs immediately
+        if(settings.autoSave) {
+            tabs.forEach(t => { if(t.isDirty) saveTab(t.path); });
+        }
     }
     function toggleWordWrap() { 
         settings.wordWrap = document.getElementById('settingWordWrap').checked; 
@@ -801,7 +795,6 @@
     }
 
     function updateCustomTheme() {
-        // 1. Update settings object with new colors
         settings.customTheme.app = document.getElementById('colorApp').value;
         settings.customTheme.sidebar = document.getElementById('colorSidebar').value;
         settings.customTheme.accent = document.getElementById('colorAccent').value;
@@ -810,23 +803,15 @@
         settings.customTheme.string = document.getElementById('colorString').value;
         settings.customTheme.comment = document.getElementById('colorComment').value;
         settings.customTheme.function = document.getElementById('colorFunction').value;
-        
-        // 2. Persist settings
         saveSettingsToStorage();
-
-        // 3. Re-define the custom theme in Monaco and apply it
         defineMonacoThemes();
         if (editor) monaco.editor.setTheme('custom');
         document.getElementById('themeSelect').value = 'custom';
-
-        // 4. Apply UI theme (uses the custom settings)
         applyUiTheme('custom');
     }
     
     function saveSettingsToStorage() {
-        try {
-            localStorage.setItem('webIDE_settings', JSON.stringify(settings));
-        } catch (e) { console.error("Could not save settings to localStorage", e); }
+        try { localStorage.setItem('webIDE_settings', JSON.stringify(settings)); } catch (e) { console.error("Could not save settings", e); }
     }
 
     function loadSettingsFromStorage() {
@@ -835,10 +820,9 @@
             if (saved) {
                 const loadedSettings = JSON.parse(saved);
                 settings = { ...settings, ...loadedSettings };
-                // Deep merge customTheme to avoid losing properties if structure changes
                 settings.customTheme = { ...settings.customTheme, ...loadedSettings.customTheme };
             }
-        } catch (e) { console.error("Could not load settings from localStorage", e); }
+        } catch (e) { console.error("Could not load settings", e); }
     }
 
     function applySettingsToUI() {
@@ -846,26 +830,16 @@
         document.getElementById('settingWordWrap').checked = settings.wordWrap;
         document.getElementById('settingFontSize').value = settings.fontSize;
         if (editor) editor.updateOptions({ fontSize: settings.fontSize, wordWrap: settings.wordWrap ? 'on' : 'off' });
-        
         let currentTheme = 'vs-dark'; 
-        if (localStorage.getItem('webIDE_currentTheme')) {
-            currentTheme = localStorage.getItem('webIDE_currentTheme');
-        } else if (settings.customTheme.app !== '#1e1e1e') {
-            currentTheme = 'custom'; 
-        }
-
+        if (localStorage.getItem('webIDE_currentTheme')) currentTheme = localStorage.getItem('webIDE_currentTheme');
+        else if (settings.customTheme.app !== '#1e1e1e') currentTheme = 'custom'; 
         const themeSelect = document.getElementById('themeSelect');
-        if ([...themeSelect.options].map(o => o.value).includes(currentTheme)) {
-            themeSelect.value = currentTheme;
-        } else {
-            themeSelect.value = 'vs-dark';
-            currentTheme = 'vs-dark';
-        }
-
+        if ([...themeSelect.options].map(o => o.value).includes(currentTheme)) themeSelect.value = currentTheme;
+        else { themeSelect.value = 'vs-dark'; currentTheme = 'vs-dark'; }
         changeTheme(currentTheme);
     }
     
-    // --- CORE FUNCTIONS (Omitted for brevity, assume content is the same) ---
+    // --- CORE FUNCTIONS ---
     function toggleSidebar() {
         document.getElementById('mainSidebar').classList.toggle('collapsed');
         setTimeout(() => editor && editor.layout(), 310); 
@@ -967,10 +941,9 @@
         return baseParts.join('/');
     }
     
-    // --- LIVE PREVIEW (Omitted for brevity, assume content is the same) ---
+    // --- LIVE PREVIEW ---
     async function updateLivePreview() {
         if (rightPanelMode !== 'live' || !activeTabPath) return;
-
         const currentTab = tabs.find(t => t.path === activeTabPath);
         if (currentTab && AssetManager.isCode(activeTabPath.split('.').pop())) {
              const content = currentTab.model.getValue();
@@ -980,10 +953,8 @@
              AssetManager.cache.set(activeTabPath, url);
              AssetManager.cache.set(activeTabPath.toLowerCase(), url);
         }
-
         let htmlContent = "";
         if (activeTabPath.endsWith('.html')) { htmlContent = editor.getValue(); } else { return; }
-
         const parser = new DOMParser();
         const doc = parser.parseFromString(htmlContent, 'text/html');
         const replaceAttribute = (el, attr) => {
@@ -999,10 +970,8 @@
             replaceAttribute(el, 'src'); replaceAttribute(el, 'href'); replaceAttribute(el, 'poster');
         });
 
-        // INJECTED SCRIPT: Handles Assets AND Console
         const injectionScript = `
             <script>
-                // 1. Console Interception
                 (function() {
                     const methods = ['log', 'error', 'warn', 'info'];
                     methods.forEach(method => {
@@ -1020,8 +989,6 @@
                         }
                     });
                 })();
-
-                // 2. Asset Management
                 window.__CURRENT_FILE_PATH__ = "${activeTabPath}";
                 window.__ASSET_MAP__ = ${JSON.stringify(Object.fromEntries(AssetManager.cache))};
                 function resolveAndLookup(rawPath) {
@@ -1067,7 +1034,6 @@
                 };
             <\/script>
         `;
-
         const finalHTML = injectionScript + doc.documentElement.outerHTML;
         const frame = document.getElementById('webFrame');
         frame.removeAttribute('src');
@@ -1076,7 +1042,7 @@
     
     function fullRefresh() { AssetManager.clear(); loadProject(projectRootHandle); }
 
-    // --- UI HELPERS (Omitted for brevity, assume content is the same) ---
+    // --- UI HELPERS ---
     function toggleConsole() {
         const p = document.getElementById('consolePane');
         p.className = p.className.includes('open') ? 'console-pane' : 'console-pane open';
@@ -1139,13 +1105,9 @@
     function closeRightPanel() { document.getElementById('rightPanel').classList.remove('open'); rightPanelMode = 'none'; document.getElementById('webFrame').removeAttribute('src'); document.getElementById('webFrame').removeAttribute('srcdoc'); setTimeout(() => editor.layout(), 310); }
     
     // --- UPDATED THEME LOGIC ---
-
     function applyUiTheme(themeName) {
-        // Save selected theme for persistence
         localStorage.setItem('webIDE_currentTheme', themeName);
-        
         let uiSettings;
-
         if (themeName === 'custom') {
             uiSettings = settings.customTheme;
         } else if (themeName === 'vs-dark') {
@@ -1167,21 +1129,12 @@
         } else if (themeName === 'ambiance') {
             uiSettings = { app: '#1c1c1c', sidebar: '#222222', header: '#282828', text: '#f8f8f8', accent: '#e5c07b', border: '#333333', hover: '#2d2d2d', tabInactive: '#222222', tabActive: '#1c1c1c' };
         }
-
         document.documentElement.style.cssText = `
-            --bg-app: ${uiSettings.app};
-            --bg-sidebar: ${uiSettings.sidebar};
-            --bg-header: ${uiSettings.header || uiSettings.sidebar};
-            --text-main: ${uiSettings.text};
-            --accent: ${uiSettings.accent};
-            --border: ${uiSettings.border || '#3e3e42'};
-            --hover: ${uiSettings.hover || '#2a2d2e'};
-            --shadow: 0 4px 6px rgba(0,0,0,0.3);
-            --tab-inactive: ${uiSettings.tabInactive || uiSettings.sidebar};
-            --tab-active: ${uiSettings.tabActive || uiSettings.app};
+            --bg-app: ${uiSettings.app}; --bg-sidebar: ${uiSettings.sidebar}; --bg-header: ${uiSettings.header || uiSettings.sidebar}; --text-main: ${uiSettings.text};
+            --accent: ${uiSettings.accent}; --border: ${uiSettings.border || '#3e3e42'}; --hover: ${uiSettings.hover || '#2a2d2e'}; --shadow: 0 4px 6px rgba(0,0,0,0.3);
+            --tab-inactive: ${uiSettings.tabInactive || uiSettings.sidebar}; --tab-active: ${uiSettings.tabActive || uiSettings.app};
         `;
     }
-
     function changeTheme(themeName) {
         if (editor) monaco.editor.setTheme(themeName);
         applyUiTheme(themeName);
